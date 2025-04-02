@@ -13,7 +13,6 @@ import traceback
 from . import ol_oom_killer, mounts, get_ol_stats, get_current_config, get_worker_output
 
 TEST_FILTER = []
-TEST_BLOCKLIST = []
 WORKER_TYPE = []
 RESULTS = OrderedDict({"runs": []})
 START_TIME = None
@@ -28,12 +27,6 @@ def set_test_filter(new_val):
 
     global TEST_FILTER
     TEST_FILTER = new_val
-
-def set_test_blocklist(new_val):
-    ''' Sets up the blocklist for all following tests '''
-
-    global TEST_BLOCKLIST
-    TEST_BLOCKLIST = new_val
 
 def start_tests():
     ''' Starts the background logic for a test run '''
@@ -67,9 +60,6 @@ def check_test_results():
     sys.exit(failed)
 
 def _test_in_filter(name):
-    if name in TEST_BLOCKLIST:
-        return False
-
     if len(TEST_FILTER) == 0:
         return True
 
@@ -80,7 +70,7 @@ def test(func):
 
     def _wrapper(*args, **kwargs):
         if len(args) > 0:
-            raise RuntimeError("positional args not supported for tests")
+            raise Exception("positional args not supported for tests")
 
         name = func.__name__
 
@@ -99,7 +89,7 @@ def test(func):
         result["params"] = kwargs
         result["pass"] = None
         result["conf"] = get_current_config()
-        result["test_seconds"] = None
+        result["seconds"] = None
         result["total_seconds"] = None
         result["stats"] = None
         result["ol-stats"] = None
@@ -109,7 +99,6 @@ def test(func):
         total_t0 = time()
         mounts0 = mounts()
         worker = None
-        return_val = None
 
         worker = WORKER_TYPE()
         assert worker
@@ -121,10 +110,11 @@ def test(func):
                 test_t0 = time()
                 return_val = func(**kwargs)
                 test_t1 = time()
-                result["test_seconds"] = test_t1 - test_t0
+                result["seconds"] = test_t1 - test_t0
                 result["pass"] = True
             except Exception as err:
                 print(f"Failed to run test: {err}")
+                return_val = None
                 result["pass"] = False
                 result["errors"].append(traceback.format_exc().split("\n"))
 
@@ -152,19 +142,7 @@ def test(func):
             result["worker_tail"] = get_worker_output()
 
         RESULTS["runs"].append(result)
-
-        if result["pass"]:
-            subset = {
-                "test": result["test"],
-                "params": result["params"],
-                "pass": result["pass"],
-                "test_seconds": result["test_seconds"],
-                "stats": result["stats"],
-            }
-            print(json.dumps(subset, indent=2))
-        else:
-            print(json.dumps(result, indent=2))
-
+        print(json.dumps(result, indent=2))
         return return_val
 
     return _wrapper

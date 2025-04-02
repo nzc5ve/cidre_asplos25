@@ -71,26 +71,14 @@ bin-functions/target/
 bin-functions/wasm-target/
 wasm-worker/target/
 container-proxy/target
-lambda/runtimes/native/target
+
+lambda/runtimes/rust/target
 
 bench-results.csv
 bench-results.pdf
 
-python/dist
-python/build
-open_lambda.egg-info
+scripts/build
+scripts/dist
+scripts/open_lambda.egg-info
 
 *.lsm
-
-benchmark.json
-
-#gcp key
-key.json
-
-#azure key
-azure.json
-
-#boss
-boss.json
-cluster.log
-tasks.log

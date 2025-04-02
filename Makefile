@@ -3,9 +3,16 @@ WASM_TARGET=wasm32-unknown-unknown
 GO=go
 OL_DIR=$(abspath ./src)
 OL_GO_FILES=$(shell find src/ -name '*.go')
-LAMBDA_FILES = min-image/Dockerfile min-image/Makefile min-image/spin.c min-image/runtimes/python/server.py min-image/runtimes/python/setup.py min-image/runtimes/python/ol.c
+LAMBDA_FILES = lambda/Dockerfile lambda/Makefile lambda/spin.c lambda/runtimes/python/server.py lambda/runtimes/python/setup.py lambda/runtimes/python/ol.c
+USE_LLVM?=1
 BUILDTYPE?=debug
 INSTALL_PREFIX?=/usr/local
+
+ifeq (${USE_LLVM}, 1)
+	WASM_WORKER_FLAGS=--features=llvm-backend
+else
+	WASM_WORKER_FLAGS=
+endif
 
 ifeq (${BUILDTYPE}, release)
 	BUILD_FLAGS=--release
@@ -13,7 +20,6 @@ else
 	BUILD_FLAGS=
 endif
 
-.PHONY: all
 .PHONY: install
 .PHONY: test-all
 .PHONY: clean
@@ -25,10 +31,10 @@ endif
 .PHONY: container-proxy
 .PHONY: fmt check-fmt
 
-all: ol imgs/ol-wasm wasm-worker wasm-functions native-functions container-proxy
+all: ol imgs/lambda wasm-worker wasm-functions native-functions
 
 wasm-worker:
-	cd wasm-worker && cargo build ${BUILD_FLAGS}
+	cd wasm-worker && cargo build ${BUILD_FLAGS} ${WASM_WORKER_FLAGS}
 	cp wasm-worker/target/${BUILDTYPE}/wasm-worker ./ol-wasm
 
 wasm-functions:
@@ -36,28 +42,24 @@ wasm-functions:
 	bash ./bin-functions/install-wasm.sh test-registry.wasm ${WASM_TARGET}
 	ls test-registry.wasm/hashing.wasm test-registry.wasm/noop.wasm
 
-native-functions: imgs/ol-wasm
+native-functions: imgs/lambda
 	cd bin-functions && cross build --release
 	bash ./bin-functions/install-native.sh test-registry
 	ls test-registry/hashing.bin test-registry/noop.bin # guarantee they were created
 
 update-dependencies:
-	cd wasm-image/runtimes/native && cargo update
+	cd lambda/runtimes/native && cargo update
 	cd wasm-worker && cargo update
 	cd bin-functions && cargo update
 	cd container-proxy && cargo update
 
-imgs/ol-min: ${LAMBDA_FILES}
-	${MAKE} -C min-image
-	docker build -t ol-min min-image
-	touch imgs/ol-min
-
-imgs/ol-wasm: imgs/ol-min wasm-image/runtimes/native/src/main.rs
-	docker build -t ol-wasm wasm-image
-	touch imgs/ol-wasm
+imgs/lambda: ${LAMBDA_FILES}
+	${MAKE} -C lambda
+	docker build -t lambda lambda
+	touch imgs/lambda
 
 install-python-bindings:
-	cd python && pip install .
+	cd scripts && python setup.py install
 
 check-runtime:
 	cd lambda/runtimes/rust && cargo check
@@ -69,21 +71,13 @@ container-proxy:
 ol: ${OL_GO_FILES}
 	cd ${OL_DIR} && ${GO} build -o ../ol
 
-build: ol wasm-worker container-proxy
-
-install: build
+install: ol wasm-worker
 	cp ol ${INSTALL_PREFIX}/bin/
 	cp ol-wasm ${INSTALL_PREFIX}/bin/
-	cp ol-container-proxy ${INSTALL_PREFIX}/bin/
-
-sudo-install: build
-	sudo cp ol ${INSTALL_PREFIX}/bin/
-	sudo cp ol-wasm ${INSTALL_PREFIX}/bin/
-	sudo cp ol-container-proxy ${INSTALL_PREFIX}/bin/
 
 test-all:
 	sudo python3 -u ./scripts/test.py --worker_type=sock
-	sudo python3 -u ./scripts/test.py --worker_type=docker --test_blocklist=max_mem_alloc
+	sudo python3 -u ./scripts/test.py --worker_type=docker --test_filter=ping_test,numpy
 	sudo python3 -u ./scripts/sock_test.py
 	sudo python3 -u ./scripts/bin_test.py --worker_type=wasm
 	sudo python3 -u ./scripts/bin_test.py --worker_type=sock
@@ -92,29 +86,21 @@ fmt:
 	#cd src && go fmt ...
 	cd wasm-worker && cargo fmt
 	cd bin-functions && cargo fmt
-	cd container-proxy && cargo fmt
 
 check-fmt:
 	cd wasm-worker && cargo fmt --check
 	cd bin-functions && cargo fmt --check
-	cd container-proxy && cargo fmt --check
 
 lint-go:
 	revive -exclude src/vendor/... -config golint.toml src/...
 
-lint-python:
-	pylint scripts --ignore=build --disable=missing-docstring,multiple-imports,global-statement,invalid-name,W0511,W1510,R0801,W3101,broad-exception-raised
-
-lint-functions:
-	cd bin-functions && make lint
-	cd container-proxy && cargo clippy
-
-lint-wasm-worker:
+lint: #go-lint
+	pylint scripts --ignore=build --disable=missing-docstring,multiple-imports,global-statement,invalid-name,W0511,W1510,R0801,W3101
 	cd wasm-worker && cargo clippy
-
-lint: lint-wasm-worker lint-functions lint-python lint-go
+	cd bin-functions && cargo clippy
 
 clean:
-	rm -f ol imgs/ol-min imgs/ol-wasm
+	rm -f ol
+	rm -f imgs/lambda
 	${MAKE} -C lambda clean
 	${MAKE} -C sock clean

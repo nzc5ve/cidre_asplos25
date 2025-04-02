@@ -4,11 +4,10 @@
 SOCK-specific tests
 '''
 
-#pylint: disable=global-statement,too-many-statements,missing-function-docstring,wrong-import-position
+#pylint: disable=global-statement,too-many-statements,missing-function-docstring
 
 import argparse
 import os
-import sys
 
 from time import time
 
@@ -17,11 +16,7 @@ from multiprocessing import Pool
 from helper import SockWorker, prepare_open_lambda, setup_config, TestConfContext
 from helper.test import set_test_filter, start_tests, check_test_results, set_worker_type, test
 
-# You can either install the OpenLambda Python bindings
-# or run the test from the project's root folder
-sys.path.append('python/src')
 from open_lambda import OpenLambda
-
 
 def sock_churn_task(args):
     open_lambda = OpenLambda()
@@ -70,6 +65,7 @@ def run_tests():
 
 def main():
     parser = argparse.ArgumentParser(description='Run SOCK-specific tests for OpenLambda')
+    parser.add_argument('--reuse_config', action="store_true")
     parser.add_argument('--test_filter', type=str, default="")
     parser.add_argument('--ol_dir', type=str, default="test-dir")
     parser.add_argument('--registry', type=str, default="test-registry")

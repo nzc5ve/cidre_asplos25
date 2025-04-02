@@ -50,7 +50,7 @@ type snapshotMsg struct {
 }
 
 var initOnce sync.Once
-var statsChan = make(chan any, 256)
+var statsChan chan any = make(chan any, 256)
 
 func initTaskOnce() {
 	initOnce.Do(func() {
@@ -117,7 +117,7 @@ func (l *Latency) T1() {
 
 	// make sure we didn't double record
 	var zero time.Time
-	if l.t0.Equal(zero) {
+	if l.t0 == zero {
 		panic("double counted stat for " + l.name)
 	}
 	l.t0 = zero

@@ -2,25 +2,19 @@
 
 ''' Integration test for open lambda's native and WebAssembly runtimes '''
 
-# pylint: disable=missing-function-docstring,consider-using-with
-# pylint: disable=wrong-import-position
+# pylint: disable=missing-function-docstring, consider-using-with
 
 import argparse
 import os
-import sys
 
 from time import time
 
-# You can either install the OpenLambda Python bindings
-# or run the test from the project's root folder
-sys.path.append('python/src')
 from open_lambda import OpenLambda
 
 from helper import DockerWorker, WasmWorker, SockWorker, TestConfContext
-from helper import prepare_open_lambda, setup_config, assert_eq
+from helper import prepare_open_lambda, setup_config
 
 from helper.test import set_test_filter, start_tests, check_test_results, set_worker_type, test
-
 
 def get_mem_stat_mb(stat):
     with open('/proc/meminfo', 'r', encoding='utf-8') as file:
@@ -29,7 +23,7 @@ def get_mem_stat_mb(stat):
                 parts = line.strip().split()
                 assert parts[-1] == 'kB'
                 return int(parts[1]) / 1024
-    raise LookupError('could not get stat')
+    raise Exception('could not get stat')
 
 @test
 def ping():
@@ -48,20 +42,9 @@ def noop():
     open_lambda.run("noop", args=[], json=False)
 
 @test
-def internal_call():
-    open_lambda = OpenLambda()
-    open_lambda.run("internal-call", args=[], json=False)
-
-@test
 def hashing():
     open_lambda = OpenLambda()
     open_lambda.run("hashing", args={"num_hashes": 100, "input_len": 1024}, json=False)
-
-@test
-def multiply():
-    open_lambda = OpenLambda()
-    result = open_lambda.run("multiply", args={"left": 25, "right": 8}, json=True)
-    assert_eq(result["result"], 200)
 
 def run_tests():
     ''' Runs all tests '''
@@ -69,8 +52,6 @@ def run_tests():
     ping()
     noop()
     hashing()
-    internal_call()
-    multiply()
 
 def _main():
     parser = argparse.ArgumentParser(description='Run tests for OpenLambda')

@@ -2,13 +2,10 @@
 
 ''' Various integration tests for the open lambda framwork '''
 
-# pylint: disable=global-statement,too-many-statements,fixme
-# pylint: disable=broad-except,too-many-locals
-# pylint: disable=missing-function-docstring,wrong-import-position
+# pylint: disable=global-statement, too-many-statements, fixme, broad-except, too-many-locals, missing-function-docstring
 
 import argparse
 import os
-import sys
 import tempfile
 
 from time import time
@@ -18,25 +15,14 @@ from multiprocessing import Pool
 import requests
 
 from helper import DockerWorker, SockWorker, prepare_open_lambda, setup_config
-from helper import get_current_config, TestConfContext, assert_true, assert_eq
+from helper import get_current_config, TestConfContext, assert_eq
 
-from helper.test import (
-    set_test_filter,
-    set_test_blocklist,
-    start_tests,
-    check_test_results,
-    set_worker_type,
-    test
-)
+from helper.test import set_test_filter, start_tests, check_test_results, set_worker_type, test
 
-# You can either install the OpenLambda Python bindings
-# or run the test from the project's root folder
-sys.path.append('python/src')
 from open_lambda import OpenLambda
 
 # These will be set by argparse in main()
 OL_DIR = None
-
 
 @test
 def install_tests():
@@ -51,7 +37,7 @@ def install_tests():
     msg = 'hello world'
     jdata = open_lambda.run("echo", msg)
     if jdata != msg:
-        raise ValueError(f"found {jdata} but expected {msg}")
+        raise Exception(f"found {jdata} but expected {msg}")
 
     jdata = open_lambda.get_statistics()
     installs = jdata.get('pull-package.cnt', 0)
@@ -73,11 +59,9 @@ def install_tests():
             # requests (and deps) + simplejson
             assert_eq(installs, 6)
 
-
 def check_status_code(req):
     if req.status_code != 200:
-        raise requests.HTTPError(f"STATUS {req.status_code}: {req.text}")
-
+        raise Exception(f"STATUS {req.status_code}: {req.text}")
 
 @test
 def numpy_test():
@@ -85,25 +69,25 @@ def numpy_test():
 
     # try adding the nums in a few different matrixes.  Also make sure
     # we can have two different numpy versions co-existing.
-    result = open_lambda.run("numpy21", [1, 2])
+    result = open_lambda.run("numpy19", [1, 2])
     assert_eq(result['result'], 3)
-    assert_true(result['numpy-version'].startswith('2.1'))
+    assert result['version'].startswith('1.19')
 
-    result = open_lambda.run("numpy22", [[1, 2], [3, 4]])
+    result = open_lambda.run("numpy20", [[1, 2], [3, 4]])
     assert_eq(result['result'], 10)
-    assert_true(result['numpy-version'].startswith('2.2'))
+    assert result['version'].startswith('1.20')
 
-    result = open_lambda.run("numpy22", [[[1, 2], [3, 4]], [[1, 2], [3, 4]]])
+    result = open_lambda.run("numpy19", [[[1, 2], [3, 4]], [[1, 2], [3, 4]]])
     assert_eq(result['result'], 20)
-    assert_true(result['numpy-version'].startswith('2.2'))
+    assert result['version'].startswith('1.19')
 
     result = open_lambda.run("pandas", [[0, 1, 2], [3, 4, 5]])
     assert_eq(result['result'], 15)
-    assert_true(float(".".join(result['numpy-version'].split('.')[:2])) >= 2.2)
+    assert float(".".join(result['version'].split('.')[:2])) >= 1.19
 
-    result = open_lambda.run("pandas-v1", [[1, 2, 3], [1, 2, 3]])
+    result = open_lambda.run("pandas18", [[1, 2, 3], [1, 2, 3]])
     assert_eq(result['result'], 12)
-    assert_true(result['numpy-version'].startswith('1.26'))
+    assert result['version'].startswith('1.18')
 
 def stress_one_lambda_task(args):
     open_lambda = OpenLambda()
@@ -126,20 +110,19 @@ def stress_one_lambda(procs, seconds):
     return {"reqs_per_sec": reqs/seconds}
 
 @test
-def call_each_once_exec(lambda_count, alloc_mb, zygote_provider):
-    with TestConfContext(features={"import_cache": zygote_provider}):
-        open_lambda = OpenLambda()
+def call_each_once_exec(lambda_count, alloc_mb):
+    open_lambda = OpenLambda()
 
-        # TODO: do in parallel
-        start = time()
-        for pos in range(lambda_count):
-            result = open_lambda.run(f"L{pos}", {"alloc_mb": alloc_mb}, json=False)
-            assert_eq(result, str(pos))
-            seconds = time() - start
+    # TODO: do in parallel
+    start = time()
+    for pos in range(lambda_count):
+        result = open_lambda.run(f"L{pos}", {"alloc_mb": alloc_mb}, json=False)
+        assert_eq(result, str(pos))
+    seconds = time() - start
 
-            return {"reqs_per_sec": lambda_count/seconds}
+    return {"reqs_per_sec": lambda_count/seconds}
 
-def call_each_once(lambda_count, alloc_mb=0, zygote_provider="tree"):
+def call_each_once(lambda_count, alloc_mb=0):
     with tempfile.TemporaryDirectory() as reg_dir:
         # create dummy lambdas
         for pos in range(lambda_count):
@@ -150,8 +133,7 @@ def call_each_once(lambda_count, alloc_mb=0, zygote_provider="tree"):
                 code.write(f"    return {pos}\n")
 
         with TestConfContext(registry=reg_dir):
-            call_each_once_exec(lambda_count=lambda_count, alloc_mb=alloc_mb,
-                                zygote_provider=zygote_provider)
+            call_each_once_exec(lambda_count=lambda_count, alloc_mb=alloc_mb)
 
 @test
 def fork_bomb():
@@ -237,55 +219,20 @@ def recursive_kill(depth):
 @test
 def flask_test():
     url = 'http://localhost:5000/run/flask-test'
-    print("URL", url)
+    print(url)
     r = requests.get(url)
-    print("RESPONSE", r)
 
     # flask apps should have control of status code, headers, and response body
-    if r.status_code != 418:
-        raise ValueError(f"expected status code 418, but got {r.status_code}")
-    if not "A" in r.headers:
-        raise ValueError(f"'A' not found in headers, as expected: {r.headers}")
-    if r.headers["A"] != "B":
-        raise ValueError(f"headers['A'] should be 'B', not {r.headers['A']}")
-    if r.text != "hi\n":
-        raise ValueError(f"r.text should be 'hi\n', not {repr(r.text)}")
-
-@test
-def test_http_method_restrictions():
-    url = 'http://localhost:5000/run/lambda-config-test'
-    print("URL", url)
-    print("Testing POST request...")
-    r = requests.post(url)
-
-    if r.status_code != 418:
-        raise ValueError(f"expected status code 418, but got {r.status_code}")
-    if not "A" in r.headers:
-        raise ValueError(f"'A' not found in headers, as expected: {r.headers}")
-    if r.headers["A"] != "B":
-        raise ValueError(f"headers['A'] should be 'B', not {r.headers['A']}")
-    if r.text != "hi\n":
-        raise ValueError(f"r.text should be 'hi\n', not {repr(r.text)}")
-
-    # Test PUT request
-    print("Testing PUT request...")
-    r = requests.put(url)
-
-    # Verify response for PUT request
-    if r.status_code != 405:
-        raise ValueError(f"Expected status code 405 for PUT, but got {r.status_code}")
-    if r.text != "HTTP method not allowed. Sent: PUT, Allowed: [GET POST]\n":
-        raise ValueError(
-            f"r.text should be 'HTTP method not allowed. Sent: PUT, Allowed: [GET POST]\n' "
-            f"for PUT, not {repr(r.text)}"
-        )
-
+    assert r.status_code == 418
+    assert "A" in r.headers
+    assert r.headers["A"] == "B"
+    assert r.text == "hi\n"
 
 def run_tests():
     ping_test()
 
     # do smoke tests under various configs
-    with TestConfContext(features={"import_cache": ""}):
+    with TestConfContext(features={"import_cache": False}):
         install_tests()
     with TestConfContext(mem_pool_mb=1000):
         install_tests()
@@ -294,15 +241,12 @@ def run_tests():
     fork_bomb()
     max_mem_alloc()
 
-    # numpy pip install needs a larger memory cap.
-    # numpy also spawns threads using OpenBLAS, so a higher
-    # process limit is needed.
-    with TestConfContext(mem_pool_mb=1000, limits={'procs': 32}, trace={"cgroups": True}):
+    # numpy pip install needs a larger mem cap
+    with TestConfContext(mem_pool_mb=1000, trace={"cgroups": True}):
         numpy_test()
 
     # make sure we can use WSGI apps based on frameworks like Flask
     flask_test()
-    test_http_method_restrictions()
 
     # make sure code updates get pulled within the cache time
     with tempfile.TemporaryDirectory() as reg_dir:
@@ -315,36 +259,27 @@ def run_tests():
         stress_one_lambda(procs=2, seconds=15)
         stress_one_lambda(procs=8, seconds=15)
 
-    with TestConfContext():
-        call_each_once(lambda_count=10, alloc_mb=1, zygote_provider="tree")
-        call_each_once(lambda_count=100, alloc_mb=10, zygote_provider="")
-        call_each_once(lambda_count=100, alloc_mb=10, zygote_provider="tree")
-        call_each_once(lambda_count=100, alloc_mb=10, zygote_provider="multitree")
+    with TestConfContext(features={"reuse_cgroups": True}):
+        call_each_once(lambda_count=10, alloc_mb=1)
+        call_each_once(lambda_count=100, alloc_mb=10)
 
 def main():
     global OL_DIR
 
     parser = argparse.ArgumentParser(description='Run tests for OpenLambda')
+    parser.add_argument('--reuse_config', action="store_true")
     parser.add_argument('--worker_type', type=str, default="sock")
     parser.add_argument('--test_filter', type=str, default="")
-    parser.add_argument('--test_blocklist', type=str, default="")
     parser.add_argument('--registry', type=str, default="test-registry")
     parser.add_argument('--ol_dir', type=str, default="test-dir")
-    parser.add_argument('--image', type=str, default="ol-wasm")
 
     args = parser.parse_args()
 
-    if args.test_filter and args.test_blocklist:
-        raise RuntimeError("--test_filter and --test_blocklist cannot be used together")
-    if args.test_filter:
-        set_test_filter([name for name in args.test_filter.split(",") if name != ''])
-    elif args.test_blocklist:
-        set_test_blocklist([name for name in args.test_blocklist.split(",") if name != ''])
-
+    set_test_filter([name for name in args.test_filter.split(",") if name != ''])
     OL_DIR = args.ol_dir
 
     setup_config(args.ol_dir)
-    prepare_open_lambda(args.ol_dir, args.image)
+    prepare_open_lambda(args.ol_dir)
 
     trace_config = {
         "cgroups": True,

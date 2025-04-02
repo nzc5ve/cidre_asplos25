@@ -13,9 +13,7 @@ use serde_bytes::ByteBuf;
 
 use open_lambda_proxy_protocol::ProxyMessage;
 
-use kioto_uring_executor as executor;
-
-#[kioto_uring_executor::main]
+#[tokio::main]
 async fn main() {
     let mut argv = std::env::args();
     argv.next().unwrap();
@@ -23,12 +21,12 @@ async fn main() {
     let container_dir = argv.next().expect("No container directory given");
 
     simple_logging::log_to_file(
-        format!("{container_dir}/container-proxy.log"),
+        format!("{}/db-proxy.log", container_dir),
         log::LevelFilter::Info,
     )
     .unwrap();
 
-    let path = format!("{container_dir}/proxy.sock");
+    let path = format!("{}/db-proxy.sock", container_dir);
     let listener = UnixListener::bind(path).unwrap();
 
     // Create pid file to notify others that the socket is bound
@@ -49,7 +47,7 @@ async fn main() {
             result = accept => {
                 match result {
                     Ok((stream, _)) => {
-                        executor::unsafe_spawn(async move {
+                        tokio::spawn(async move {
                             handle_connection(stream).await;
                         });
                     }
@@ -63,15 +61,11 @@ async fn main() {
     }
 }
 
-async fn function_call(func_name: String, args: Vec<u8>) -> Result<Vec<u8>, String> {
-    log::trace!("Issuing function call to {func_name}");
-
+async fn call_function(func_name: String, args: Vec<u8>) -> Result<Vec<u8>, String> {
+    log::debug!("Issuing internal call to {}", func_name);
     let server_addr = "localhost:5000";
-    let url = format!("http://{server_addr}/run/{func_name}");
-    let client = reqwest::ClientBuilder::new()
-        .tcp_nodelay(true)
-        .build()
-        .expect("Failed to set up HTTP client");
+    let url = format!("http://{}/run/{}", server_addr, func_name);
+    let client = reqwest::Client::new();
 
     let request = client.post(url).body(args);
 
@@ -100,18 +94,20 @@ async fn function_call(func_name: String, args: Vec<u8>) -> Result<Vec<u8>, Stri
 }
 
 async fn handle_connection(stream: UnixStream) {
-    log::debug!("Connected to process");
+    log::info!("Connected to process");
 
     let (reader, writer) = stream.into_split();
 
     let mut reader = FramedRead::new(reader, LengthDelimitedCodec::new());
     let mut writer = FramedWrite::new(writer, LengthDelimitedCodec::new());
 
+    log::debug!("Setup database connection");
+
     while let Some(res) = reader.next().await {
         let data = match res {
             Ok(data) => data,
-            Err(err) => {
-                log::error!("Failed to receive data from runtime: {err}");
+            Err(e) => {
+                log::error!("Failed to receive data from runtime: {}", e);
                 break;
             }
         };
@@ -119,12 +115,12 @@ async fn handle_connection(stream: UnixStream) {
         let msg = bincode::deserialize(&data).unwrap();
 
         let response = match msg {
-            ProxyMessage::FuncCallRequest(call_data) => {
-                let result = function_call(call_data.fn_name, call_data.args.into_vec()).await;
-                ProxyMessage::FuncCallResult(result.map(ByteBuf::from))
+            ProxyMessage::CallRequest(call_data) => {
+                let result = call_function(call_data.fn_name, call_data.args.into_vec()).await;
+                ProxyMessage::CallResult(result.map(ByteBuf::from))
             }
             _ => {
-                panic!("Got unexpected message: {msg:?}");
+                panic!("Got unexpected message");
             }
         };
 

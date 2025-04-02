@@ -1,26 +1,15 @@
-#![feature(impl_trait_in_assoc_type)]
-
-use std::collections::HashMap;
-use std::fs::{File, read_dir, remove_file};
+use std::fs::{read_dir, remove_file, File};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::thread::available_parallelism;
 
-use http_body_util::{BodyExt, Full};
+use serde::{Deserialize, Serialize};
 
-use hyper::body::{Bytes, Incoming};
-use hyper::server::conn::http1;
-use hyper::{Method, Request, Response, StatusCode, http};
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Method, Request, Response, Result, Server, StatusCode};
 
-use tokio::runtime;
-use tokio::signal::unix::{SignalKind, signal};
+use futures_util::stream::StreamExt;
 
-use anyhow::Context;
-
-use clap::Parser;
-
-mod support;
+use tokio::signal::unix::{signal, SignalKind};
 
 mod functions;
 use functions::FunctionManager;
@@ -29,11 +18,28 @@ use parking_lot::Mutex;
 
 mod bindings;
 
-mod http_client;
+use std::sync::Arc;
+
+use clap::Parser;
+
+use async_wormhole::stack::Stack;
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, derive_more::Display, clap::ValueEnum,
+)]
+pub enum WasmCompilerType {
+    LLVM,
+    Cranelift,
+    Singlepass,
+}
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
+    #[clap(long, value_enum, default_value = "llvm")]
+    #[clap(help = "Which compiler should be used to compile WebAssembly to native code?")]
+    wasm_compiler: WasmCompilerType,
+
     #[clap(long, short = 'l', default_value = "localhost:5000")]
     #[clap(help = "What is the address to listen on for client requests?")]
     listen_address: String,
@@ -41,24 +47,16 @@ struct Args {
     #[clap(long, short = 'p', default_value = "./test-registry.wasm")]
     #[clap(help = "Where are the WASM functions stored?")]
     registry_path: String,
-
-    #[clap(long)]
-    enable_cpu_profiler: bool,
-
-    #[clap(short = 'C')]
-    config_values: Option<Vec<String>>,
 }
 
-async fn load_functions(
-    registry_path: &str,
-    function_mgr: &Arc<FunctionManager>,
-) -> anyhow::Result<()> {
-    let cache_path: PathBuf = format!("{registry_path}.cache").into();
+async fn load_functions(registry_path: &str, function_mgr: &Arc<FunctionManager>) {
+    let compiler_name = format!("{}", function_mgr.get_compiler_type()).to_lowercase();
+    let cache_path: PathBuf = format!("{registry_path}.worker.{compiler_name}.cache").into();
 
     let directory = match read_dir(registry_path) {
         Ok(dir) => dir,
         Err(err) => {
-            anyhow::bail!("Failed to open registry at {registry_path:?}: {err}");
+            panic!("Failed to open registry at {registry_path:?}: {err}");
         }
     };
 
@@ -88,212 +86,78 @@ async fn load_functions(
             .load_function(file_path, cache_path.clone())
             .await;
     }
-
-    Ok(())
 }
 
-struct Service {
-    worker_addr: SocketAddr,
-    function_mgr: Arc<FunctionManager>,
-    config_values: Arc<HashMap<String, String>>,
-}
+#[tokio::main]
+async fn main() {
+    pretty_env_logger::init();
 
-impl hyper::service::Service<Request<Incoming>> for Service {
-    type Response = Response<Full<Bytes>>;
-    type Error = http::Error;
-    type Future = impl std::future::Future<Output = http::Result<Response<Full<Bytes>>>>;
+    let args = Args::parse();
 
-    fn call(&self, req: Request<Incoming>) -> Self::Future {
-        Self::handle_request(
-            req,
-            self.worker_addr,
-            self.function_mgr.clone(),
-            self.config_values.clone(),
-        )
-    }
-}
-
-impl Service {
-    async fn handle_request(
-        req: Request<Incoming>,
-        worker_addr: SocketAddr,
-        function_mgr: Arc<FunctionManager>,
-        config_values: Arc<HashMap<String, String>>,
-    ) -> http::Result<Response<Full<Bytes>>> {
-        log::trace!("Got new request: {req:?}");
-
-        let mut path = req
-            .uri()
-            .path()
-            .split('/')
-            .filter(|x| !x.is_empty())
-            .map(String::from)
-            .collect::<Vec<String>>();
-
-        let method = req.method().clone();
-        let args = req.collect().await.unwrap().to_bytes().to_vec();
-
-        if method == Method::POST && path.len() == 2 && path[0] == "run" {
-            Self::execute_function(
-                worker_addr,
-                &path.pop().unwrap(),
-                args,
-                function_mgr,
-                config_values,
-            )
-            .await
-        } else if method == Method::GET && path.len() == 1 && path[0] == "status" {
-            Self::get_status().await
-        } else {
-            panic!("Got unexpected request to {path:?} (Method: {method:?})");
-        }
-    }
-
-    async fn execute_function(
-        worker_addr: SocketAddr,
-        name: &str,
-        args: Vec<u8>,
-        function_mgr: Arc<FunctionManager>,
-        config_values: Arc<HashMap<String, String>>,
-    ) -> http::Result<Response<Full<Bytes>>> {
-        let result = Arc::new(Mutex::new(None));
-
-        let function = match function_mgr.get_function(name).await {
-            Some(func) => func,
-            None => panic!("No such function \"{name}\""),
-        };
-
-        log::trace!("Starting function call for \"{name}\"");
-
-        let mut instance_hdl = function
-            .get_idle_instance(args, &config_values, worker_addr, result.clone())
-            .await;
-
-        let (mut store, instance) = instance_hdl.get();
-
-        let call_result = instance
-            .get_func(&mut store, "f")
-            .unwrap()
-            .call_async(store, &[], &mut [])
-            .await;
-
-        let response = if let Err(error) = call_result {
-            // Handle a regular crash here
-            log::error!("Function failed with message \"{}\"", error.root_cause());
-
-            let response = Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Default::default())?;
-            instance_hdl.mark_idle();
-
-            response
-        } else {
-            let result = result.lock().take();
-
-            let body = if let Some(result) = result {
-                result.into()
-            } else {
-                vec![].into()
-            };
-
-            let response = Response::builder().status(StatusCode::OK).body(body)?;
-
-            instance_hdl.mark_idle();
-            log::trace!("Done with function call for \"{name}\"");
-
-            response
-        };
-
-        Ok(response)
-    }
-
-    async fn get_status() -> http::Result<Response<Full<Bytes>>> {
-        Response::builder()
-            .status(StatusCode::OK)
-            .body(vec![].into())
-    }
-}
-
-async fn main_func(args: Args) -> anyhow::Result<()> {
     let worker_addr: SocketAddr = match args.listen_address.to_socket_addrs() {
         Ok(mut addrs) => addrs.next().unwrap(),
         Err(err) => {
-            anyhow::bail!(
+            log::error!(
                 "Failed to parse listen address \"{}\": {err}",
                 args.listen_address
             );
+            return;
         }
     };
 
-    let function_mgr = Arc::new(
-        FunctionManager::new()
-            .await
-            .with_context(|| "Failed to create function manager")?,
-    );
+    let function_mgr = Arc::new(FunctionManager::new(args.wasm_compiler).await);
 
-    let mut config_values = HashMap::default();
+    load_functions(&args.registry_path, &function_mgr).await;
 
-    if let Some(vals) = args.config_values {
-        for entry in vals {
-            let mut split = entry.split('=');
-            let key = split.next().expect("Invalid config setting");
-            let value = split.next().expect("Invalid config setting");
+    let make_service = make_service_fn(move |_| {
+        let function_mgr = function_mgr.clone();
 
-            config_values.insert(key.to_string(), value.to_string());
-        }
-    }
+        async move {
+            Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
+                let function_mgr = function_mgr.clone();
 
-    let config_values = Arc::new(config_values);
+                async move {
+                    log::trace!("Got new request: {req:?}");
 
-    load_functions(&args.registry_path, &function_mgr).await?;
+                    let mut path = req
+                        .uri()
+                        .path()
+                        .split('/')
+                        .filter(|x| !x.is_empty())
+                        .map(String::from)
+                        .collect::<Vec<String>>();
 
-    let listener = tokio::net::TcpListener::bind(&worker_addr)
-        .await
-        .unwrap_or_else(|err| {
-            panic!("Failed to bind socket for OL wasm-worker at {worker_addr}: {err}")
-        });
+                    let mut args = Vec::new();
+                    let method = req.method().clone();
 
-    #[cfg(feature = "cpuprofiler")]
-    let enable_cpu_profiler = args.enable_cpu_profiler;
+                    let mut body = req.into_body();
 
-    #[cfg(feature = "cpuprofiler")]
-    if enable_cpu_profiler {
-        let mut profiler = cpuprofiler::PROFILER.lock().unwrap();
-        let fname = format!("ol-wasm_{}.profile", std::process::id());
-        profiler
-            .start(fname.clone())
-            .expect("Failed to start profiler");
+                    while let Some(chunk) = body.next().await {
+                        match chunk {
+                            Ok(c) => {
+                                let mut chunk = c.to_vec();
+                                args.append(&mut chunk);
+                            }
+                            Err(err) => {
+                                panic!("Got error: {err:?}");
+                            }
+                        }
+                    }
 
-        log::info!("CPU profiler enabled. Writing output to '{fname}'");
-    }
-
-    let fut = tokio::spawn(async move {
-        while let Ok((conn, addr)) = listener.accept().await {
-            log::debug!("Got new connection from {addr}");
-
-            let function_mgr = function_mgr.clone();
-            let config_values = config_values.clone();
-
-            tokio::spawn(async move {
-                let service = Service {
-                    worker_addr,
-                    function_mgr,
-                    config_values,
-                };
-
-                conn.set_nodelay(true).unwrap();
-                let conn = support::TokioIo::new(conn);
-
-                if let Err(http_err) = http1::Builder::new()
-                    .keep_alive(true)
-                    .serve_connection(conn, service)
-                    .await
-                {
-                    log::error!("Error while serving HTTP connection: {http_err}");
+                    if method == Method::POST && path.len() == 2 && path[0] == "run" {
+                        execute_function(worker_addr, &path.pop().unwrap(), args, function_mgr)
+                            .await
+                    } else if method == Method::GET && path.len() == 1 && path[0] == "status" {
+                        get_status().await
+                    } else {
+                        panic!("Got unexpected request to {path:?} (Method: {method:?})");
+                    }
                 }
-            });
+            }))
         }
     });
+
+    let server = Server::bind(&worker_addr).serve(make_service);
 
     log::info!("Listening on http://{worker_addr}");
 
@@ -303,7 +167,7 @@ async fn main_func(args: Args) -> anyhow::Result<()> {
     File::create("./ol-wasm.ready").expect("Failed to create ready file");
 
     tokio::select! {
-        result = fut => {
+        result = server => {
             if let Err(err) = result {
                 log::error!("Got server error: {err}");
             }
@@ -324,29 +188,68 @@ async fn main_func(args: Args) -> anyhow::Result<()> {
         }
     }
 
-    #[cfg(feature = "cpuprofiler")]
-    if enable_cpu_profiler {
-        let mut profiler = cpuprofiler::PROFILER.lock().unwrap();
-        profiler.stop().expect("Failed to stop profiler");
-    }
-
     remove_file("./ol-wasm.ready").unwrap();
-
-    Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
-    env_logger::init();
+async fn execute_function(
+    worker_addr: SocketAddr,
+    name: &str,
+    args: Vec<u8>,
+    function_mgr: Arc<FunctionManager>,
+) -> Result<Response<Body>> {
+    let args = Arc::new(args);
 
-    let args = Args::parse();
+    let result = Arc::new(Mutex::new(None));
 
-    let num_threads = 2 * available_parallelism().unwrap().get();
+    let function = match function_mgr.get_function(name).await {
+        Some(func) => func,
+        None => panic!("No such function \"{name}\""),
+    };
 
-    let rt = runtime::Builder::new_multi_thread()
-        .enable_io()
-        .worker_threads(num_threads)
-        .build()
+    let instance = function.get_idle_instance(args.clone(), worker_addr, result.clone());
+
+    let func_args: Vec<u32> = vec![];
+
+    let stack = async_wormhole::stack::EightMbStack::new().unwrap();
+    if let (Err(e), _) = instance.get().call_with_stack("f", stack, func_args).await {
+        if let Some(wasmer_vm::TrapCode::StackOverflow) = e.clone().to_trap() {
+            log::error!("Function failed due to stack overflow");
+        } else {
+            log::error!("Function failed with message \"{}\"", e.message());
+            log::error!("Stack trace:");
+
+            for frame in e.trace() {
+                log::error!(
+                    "   {}::{}",
+                    frame.module_name(),
+                    frame.function_name().unwrap_or("unknown")
+                );
+            }
+        }
+    };
+
+    let result = result.lock().take();
+
+    let body = if let Some(result) = result {
+        result.into()
+    } else {
+        Body::empty()
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(body)
         .unwrap();
 
-    rt.block_on(async move { main_func(args).await })
+    instance.mark_idle();
+    Ok(response)
+}
+
+async fn get_status() -> Result<Response<Body>> {
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())
+        .unwrap();
+
+    Ok(response)
 }

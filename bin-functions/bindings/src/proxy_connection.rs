@@ -1,48 +1,48 @@
 use bytes::{Bytes, BytesMut};
 
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 
-use parking_lot::{Mutex, MutexGuard};
-use std::sync::OnceLock;
+use std::os::unix::net::UnixStream;
 
 use tokio_util::codec::length_delimited::LengthDelimitedCodec;
 use tokio_util::codec::{Decoder, Encoder};
 
 use serde_bytes::ByteBuf;
 
-use open_lambda_proxy_protocol::{CallResult, FuncCallData, ProxyMessage};
+use open_lambda_proxy_protocol::{CallData, CallResult, ProxyMessage};
 
 pub(crate) struct ProxyConnection {
     codec: LengthDelimitedCodec,
     stream: UnixStream,
 }
 
-pub static CONNECTION: OnceLock<Mutex<ProxyConnection>> = OnceLock::new();
+static mut CONNECTION: Option<ProxyConnection> = None;
 
 impl ProxyConnection {
-    pub fn get() -> MutexGuard<'static, Self> {
-        CONNECTION.get_or_init(Self::establish_connection).lock()
+    pub fn get_instance() -> ProxyHandle {
+        let inner = if let Some(inner) = unsafe { CONNECTION.take() } {
+            inner
+        } else {
+            log::debug!("Establishing connection to database proxy");
+            let stream = UnixStream::connect("/host/proxy.sock")
+                .expect("Failed to connect to container proxy");
+            let codec = LengthDelimitedCodec::new();
+
+            Self { stream, codec }
+        };
+
+        ProxyHandle { inner: Some(inner) }
     }
 
-    fn establish_connection() -> Mutex<Self> {
-        log::debug!("Establishing connection to container proxy");
-        let stream =
-            UnixStream::connect("/host/proxy.sock").expect("Failed to connect to container proxy");
-        let codec = LengthDelimitedCodec::new();
-
-        Mutex::new(Self { stream, codec })
-    }
-
-    pub fn func_call(&mut self, fn_name: String, args: Vec<u8>) -> CallResult {
+    pub fn call(&mut self, fn_name: String, args: Vec<u8>) -> CallResult {
         log::trace!("Issuing call request");
-        let cdata = FuncCallData {
+        let cdata = CallData {
             fn_name,
             args: ByteBuf::from(args),
         };
-        self.send_message(&ProxyMessage::FuncCallRequest(cdata));
+        self.send_message(&ProxyMessage::CallRequest(cdata));
 
-        if let ProxyMessage::FuncCallResult(result) = self.receive_message() {
+        if let ProxyMessage::CallResult(result) = self.receive_message() {
             result
         } else {
             panic!("got unexpected result");
@@ -72,7 +72,7 @@ impl ProxyConnection {
                 Err(err) => panic!("failed to read from socket: {err}"),
             };
 
-            log::trace!("Received {len} bytes from proxy");
+            log::info!("Received {len} bytes from proxy");
 
             if len > 0 {
                 buffer.extend_from_slice(&data[0..len]);
@@ -89,6 +89,24 @@ impl ProxyConnection {
                 }
                 Err(err) => panic!("Failed to decode from socket: {err}"),
             }
+        }
+    }
+}
+
+pub(crate) struct ProxyHandle {
+    inner: Option<ProxyConnection>,
+}
+
+impl ProxyHandle {
+    pub fn get_mut(&mut self) -> &mut ProxyConnection {
+        self.inner.as_mut().unwrap()
+    }
+}
+
+impl Drop for ProxyHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CONNECTION = Some(self.inner.take().unwrap());
         }
     }
 }

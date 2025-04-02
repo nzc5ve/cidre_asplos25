@@ -1,3 +1,6 @@
+# ol-install: pandas,pytest,hypothesis,exceptiongroup
+# TODO: why isn't exceptiongroup automatically installed?
+
 import numpy
 import pandas
 import pytest

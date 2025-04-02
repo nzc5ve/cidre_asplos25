@@ -72,7 +72,7 @@ class TestConf:
             try:
                 self.orig = json.load(cfile)
             except json.JSONDecodeError as err:
-                raise ValueError(
+                raise Exception(
                     f"Failed to parse JSON file. Contents are:\n"
                     f"{cfile.read()}"
                 ) from err
@@ -80,7 +80,7 @@ class TestConf:
         new = copy.deepcopy(self.orig)
         for (key, value) in keywords.items():
             if not key in new:
-                raise ValueError(f"unknown config param: {key}")
+                raise Exception(f"unknown config param: {key}")
 
             if isinstance(value, dict):
                 for key2 in value:
@@ -120,25 +120,23 @@ def run(cmd):
         fail = True
 
     out = str(out, 'utf-8')
+    if len(out) > 500:
+        out = out[:500] + "..."
 
-    if not fail:
-        if len(out) > 500:
-            print(out[:500])
-        print(out)
-    else:
-        print(out)
-        raise RuntimeError(f"command ({' '.join(cmd)}) failed")
+    if fail:
+        raise Exception(f"command ({' '.join(cmd)}) failed: {out}")
+    print(out)
 
 class DockerWorker():
     ''' Runs OpenLambda with Docker as backend '''
 
     def __init__(self):
         self._running = False
-        self._config = TestConf(sandbox="docker", features={"import_cache": ""})
+        self._config = TestConf(sandbox="docker", features={"import_cache": False})
 
         try:
             print("Starting Docker container worker")
-            run(['sudo', './ol', 'worker', 'up', f'-p={_OL_DIR}', '--detach'])
+            run(['./ol', 'worker', f'-p={_OL_DIR}', '--detach'])
         except Exception as err:
             raise RuntimeError(f"failed to start worker: {err}") from err
 
@@ -166,7 +164,7 @@ class DockerWorker():
 
         try:
             print("Stopping Docker container worker")
-            run(['sudo', './ol', 'worker', 'down', '-p='+_OL_DIR])
+            run(['./ol', 'kill', '-p='+_OL_DIR])
         except Exception as err:
             raise RuntimeError("Failed to start worker") from err
 
@@ -179,7 +177,7 @@ class SockWorker():
 
         try:
             print("Starting SOCK container worker")
-            run(['sudo', './ol', 'worker', 'up', '-p='+_OL_DIR, '--detach'])
+            run(['./ol', 'worker', '-p='+_OL_DIR, '--detach'])
         except Exception as err:
             raise RuntimeError(f"failed to start worker: {err}") from err
 
@@ -203,14 +201,13 @@ class SockWorker():
         if self.is_running():
             self._running = False
         else:
-            return  # Already stopped
+            return # Already stopped
 
         try:
             print("Stopping SOCK container worker")
-            run(['sudo', './ol', 'worker', 'down', '-p='+_OL_DIR])
+            run(['./ol', 'kill', '-p='+_OL_DIR])
         except Exception as err:
             raise RuntimeError("Failed to start worker") from err
-
 
 class WasmWorker():
     ''' Runs OpenLambda's WebAssembly worker '''
@@ -255,14 +252,34 @@ class WasmWorker():
         self._process.terminate()
         self._process = None
 
-def prepare_open_lambda(ol_dir, image="ol-wasm"):
+def prepare_open_lambda(ol_dir, reuse_config=False):
     '''
     Sets up the working director for open lambda,
     and stops currently running worker processes (if any)
     '''
-    # init will kill any prior worker and refresh the directory
-    # (except for the base "lambda" dir)
-    run(['./ol', 'worker', 'init', f'-p={ol_dir}', f'-i={image}'])
+    if os.path.exists(_OL_DIR):
+        try:
+            run(['./ol', 'kill', f'-p={ol_dir}'])
+            print("stopped existing worker")
+        except Exception as err:
+            print(f"Could not kill existing worker: {err}")
+
+    # general setup
+    if not reuse_config:
+        if os.path.exists(ol_dir):
+            run(['rm', '-rf', ol_dir])
+
+        run(['./ol', 'new', f'-p={ol_dir}'])
+    else:
+        if os.path.exists(_OL_DIR):
+            # Make sure the pid file is gone even if the previous worker crashed
+            try:
+                run(['rm', '-rf', f'{ol_dir}/worker'])
+            except Exception as _:
+                pass
+        else:
+            # There was never a config in the first place, create one
+            run(['./ol', 'new', f'-p={ol_dir}'])
 
 def mounts():
     ''' Returns a list of all mounted directories '''
@@ -271,7 +288,6 @@ def mounts():
     output = str(output, "utf-8")
     output = output.split("\n")
     return set(output)
-
 
 def ol_oom_killer():
     ''' Will terminate OpenLambda if we run out of memory '''
@@ -282,7 +298,6 @@ def ol_oom_killer():
             os.system('pkill ol')
         sleep(1)
 
-
 def get_mem_stat_mb(stat):
     ''' Get the current memory usage in MB '''
     with open('/proc/meminfo', 'r', encoding='utf-8') as memfile:
@@ -291,17 +306,10 @@ def get_mem_stat_mb(stat):
                 parts = line.strip().split()
                 assert_eq(parts[-1], 'kB')
                 return int(parts[1]) / 1024
-    raise ValueError('could not get stat')
-
-def assert_true(val):
-    ''' Test helper. Will fail if val is not true '''
-
-    if not val:
-        raise ValueError('Expected value to be true')
+    raise Exception('could not get stat')
 
 def assert_eq(actual, expected):
     ''' Test helper. Will fail if actual != expected '''
 
     if expected != actual:
-        raise ValueError(f'Expected value "{expected}", '
-                         f'but was "{actual}"')
+        raise Exception(f'Expected value "{expected}", but was "{actual}"')
