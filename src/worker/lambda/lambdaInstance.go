@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"fmt"
 
 	"github.com/open-lambda/open-lambda/ol/common"
 	"github.com/open-lambda/open-lambda/ol/worker/sandbox"

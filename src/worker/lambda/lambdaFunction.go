@@ -350,7 +350,7 @@ func (f *LambdaFunc) Task() {
 
 		var trigNum float64 = 0.8
 
-		if trigNum * queuingMs.Avg > execMs.Avg {
+		if trigNum * float64(queuingMs.Avg) > float64(execMs.Avg) {
 			f.coldPath = true
 		}
 
@@ -390,7 +390,7 @@ func (f *LambdaFunc) Task() {
 				lastScaling = &now
 			}
 		} else if f.instances.Len() > desiredInstances {
-			if trigNum * f.instances.Len() > desiredInstances {
+			if trigNum * float64(f.instances.Len()) > float64(desiredInstances) {
 				f.coldPath = false
 			}
 			f.printf("reduce instances to %d", f.instances.Len()-1)
