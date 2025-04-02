@@ -3,11 +3,13 @@
 [![CI](https://github.com/open-lambda/open-lambda/actions/workflows/ci.yml/badge.svg)](https://github.com/open-lambda/open-lambda/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-CIDRE is implemented based on OpenLambda.
+CIDRE is a concurrency-informed serverless function container orchestration algorithm that introduces a new concept: "Delayed Warm Start." Instead of 
+initializing a new container to execute an incoming function request as a cold start, delayed warm start allows the request to be executed in an existing 
+warm container with a queuing delay, which may reduce both invocation overhead and memory consumption. Our research agenda is described in more detail in 
+[ASPLOS '25](https://dl.acm.org/doi/pdf/10.1145/3676641.3716253). 
 
-OpenLambda is an Apache-licensed serverless computing project, written (mostly) in Go and based on Linux containers.
+CIDRE is implemented based on OpenLambda which is an Apache-licensed serverless computing project, written (mostly) in Go and based on Linux containers.
 The primary goal of OpenLambda is to enable exploration of new approaches to serverless computing.
-Our research agenda is described in more detail in a [HotCloud '16 paper](https://www.usenix.org/system/files/conference/hotcloud16/hotcloud16_hendrickson.pdf).
 
 ## Build and Test
 
