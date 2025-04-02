@@ -38,7 +38,7 @@ type LambdaFunc struct {
 	funcChan  chan *Invocation // server to func
 	instChan  chan *Invocation // func to instances
 	doneChan  chan *Invocation // instances to func
-	delyChan  chan *Invocation // instances to func (delayed requests)
+	delyChan  chan *Invocation // func to instances (delayed requests)
 	instances *list.List
 
 	// cold start path trigger
