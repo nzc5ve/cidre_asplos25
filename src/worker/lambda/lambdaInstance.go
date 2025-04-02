@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
+	"fmt"
 
 	"github.com/open-lambda/open-lambda/ol/common"
 	"github.com/open-lambda/open-lambda/ol/worker/sandbox"
@@ -43,6 +45,7 @@ func (linst *LambdaInstance) Task() {
 
 	var sb sandbox.Sandbox
 	var err error
+	done := make(chan bool)
 
 	for {
 		// wait for a request (blocking) before making the
@@ -103,7 +106,7 @@ func (linst *LambdaInstance) Task() {
 			sb = nil
 
 			// send invocation to delayed queue, if room in queue
-			req.queueStart := time.Now()
+			req.queueStart = time.Now()
 			select {
 			case f.delyChan <- req:
 				// block until it's done
@@ -139,7 +142,7 @@ func (linst *LambdaInstance) Task() {
 			select {
 			case req = <-f.delyChan:
 				queueEnd := time.Since(req.queueStart)
-				req.queuingMs := int(queueEnd.Milliseconds())
+				req.queuingMs = int(queueEnd.Milliseconds())
 			case req = <-f.instChan:
 			default:
 				req = nil
@@ -237,7 +240,7 @@ func (linst *LambdaInstance) Task() {
 			select {
 			case req = <-f.delyChan:
 				queueEnd := time.Since(req.queueStart)
-				req.queuingMs := int(queueEnd.Milliseconds())
+				req.queuingMs = int(queueEnd.Milliseconds())
 			case req = <-f.instChan:
 			default:
 				req = nil

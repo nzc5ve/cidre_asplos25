@@ -348,7 +348,9 @@ func (f *LambdaFunc) Task() {
 		inProgressWorkMs := outstandingReqs * execMs.Avg
 		desiredInstances := inProgressWorkMs / 10
 
-		if 0.8 * queuingMs.Avg > execMs.Avg {
+		var trigNum float64 = 0.8
+
+		if trigNum * queuingMs.Avg > execMs.Avg {
 			f.coldPath = true
 		}
 
@@ -388,7 +390,7 @@ func (f *LambdaFunc) Task() {
 				lastScaling = &now
 			}
 		} else if f.instances.Len() > desiredInstances {
-			if 0.8 * f.instances.Len() > desiredInstances {
+			if trigNum * f.instances.Len() > desiredInstances {
 				f.coldPath = false
 			}
 			f.printf("reduce instances to %d", f.instances.Len()-1)
