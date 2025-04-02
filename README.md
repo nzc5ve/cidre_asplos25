@@ -1,7 +1,9 @@
-# OpenLambda
+# CIDRE
 
 [![CI](https://github.com/open-lambda/open-lambda/actions/workflows/ci.yml/badge.svg)](https://github.com/open-lambda/open-lambda/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+CIDRE is implemented based on OpenLambda.
 
 OpenLambda is an Apache-licensed serverless computing project, written (mostly) in Go and based on Linux containers.
 The primary goal of OpenLambda is to enable exploration of new approaches to serverless computing.
