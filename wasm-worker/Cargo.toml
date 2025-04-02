@@ -1,0 +1,29 @@
+[package]
+name = "wasm-worker"
+version = "0.1.0"
+authors = ["Kai Mast <kai@kaimast.com>"]
+edition = "2024"
+
+[dependencies]
+tokio = { version="1", features=["net", "rt-multi-thread", "signal", "macros"] }
+hyper = { version="1", features=["server", "client", "http1"] }
+serde_bytes = "0.11"
+clap = { version = "4", default-features=false, features=["help", "suggestions", "color", "std", "cargo", "derive"]}
+crossbeam = "0.8"
+wasmtime = { version="29", features=["async"] }
+env_logger = "0.11"
+log = "0.4"
+parking_lot = "0.12"
+dashmap = "6"
+anyhow = "1"
+cpuprofiler = { version="0", optional=true }
+bincode = "1"
+rand = "0.9"
+open-lambda-proxy-protocol = { path="../bin-functions/proxy-protocol" }
+http-body-util = "0.1.0-rc.2"
+pin-project-lite = "0.2"
+
+[profile.release]
+debug = true
+opt-level = 3
+lto = false # takes way too long
