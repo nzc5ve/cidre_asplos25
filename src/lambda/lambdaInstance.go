@@ -104,8 +104,8 @@ func (linst *LambdaInstance) Task() {
 		if sb == nil {
 			sb = nil
 
-			// send invocation to delayed queue, if room in queue
 			req.queueStart = time.Now()
+			// send invocation to delayed queue, if room in queue
 			select {
 			case f.delyChan <- req:
 			default:
