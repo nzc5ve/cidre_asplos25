@@ -108,8 +108,6 @@ func (linst *LambdaInstance) Task() {
 			req.queueStart = time.Now()
 			select {
 			case f.delyChan <- req:
-				// block until it's done
-				<-done
 			default:
 				// queue cannot accept more, so reply with backoff
 				req.w.WriteHeader(http.StatusTooManyRequests)
